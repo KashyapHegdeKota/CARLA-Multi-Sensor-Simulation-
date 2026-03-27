@@ -35,6 +35,8 @@ from math import radians
 from PIL import Image
 from pygame.locals import K_ESCAPE, K_2, K_3, K_r
 import cv2
+import os
+from datetime import datetime
 
 # --- Bounding Box Constants & Functions ---
 EDGES = [[0,1], [1,3], [3,2], [2,0], [0,4], [4,5], [5,1], [5,7], [7,6], [6,4], [6,2], [7,3]]
@@ -362,14 +364,24 @@ def main():
         inst_queue = queue.Queue()
         inst_camera.listen(inst_queue.put)
 
+
+        # Generate a unique string for this run (e.g., "20260326_223204")
+        run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_dir = f"_out/{run_stamp}_images"
+        vid_dir = f"_out/{run_stamp}_video"
+        
+        # Safely create the directories if they don't exist
+        os.makedirs(img_dir, exist_ok=True)
+        os.makedirs(vid_dir, exist_ok=True)
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_out = cv2.VideoWriter(f'{vid_dir}/output.mp4', fourcc, 20.0, (args.width, args.height))
+        start_time = None
+        
         # Loop State
         record = True
         display_3d = True
         run_simulation = True
-
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_out = cv2.VideoWriter('_out/video/output.mp4', fourcc, 20.0, (args.width, args.height))
-        start_time = None
 
         while run_simulation:
             # 1. Handle Pygame Events
@@ -459,25 +471,31 @@ def main():
             clock.tick(60)
             
             if record:
-
                 raw = pygame.surfarray.array3d(display)
                 raw = np.transpose(raw, (1, 0, 2))
-                Image.fromarray(raw).save(f'_out/image_{time.time():.2f}_{image.frame:08d}.png')
+                
+                # Save to the new image directory
+                Image.fromarray(raw).save(f'{img_dir}/image_{snapshot.frame:08d}.png')
 
                 frame_bgr = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
                 video_out.write(frame_bgr)
 
-                with open(f"_out/{snapshot.frame}.json", 'w') as f:
+                # Save JSON to the image directory
+                with open(f"{img_dir}/{snapshot.frame}.json", 'w') as f:
                     json.dump(json_frame_data, f)
-            if snapshot.timestamp.elapsed_seconds - start_time > 30: # Stop after 30 seconds
+                    
+            if snapshot.timestamp.elapsed_seconds - start_time >= 30: # Stop after 30 seconds
+                print("\n[Timer] 30 seconds reached. Initiating shutdown...")
                 run_simulation = False
     except KeyboardInterrupt:
         print('\nCancelled by user. Bye!')
     finally:
         print('\nCleaning up actors...')
         
-        if video_out in locals():
+        # Notice the quotes around 'video_out'
+        if 'video_out' in locals():
             video_out.release()
+            print('Video saved successfully.')
 
         # Destroy sensors (drone)
         if 'drone_camera' in locals():
@@ -495,6 +513,9 @@ def main():
 
         client.apply_batch([DestroyActor(x) for x in vehicles_list])
         client.apply_batch([DestroyActor(x) for x in all_id])
+        
+        # --- NEW: Force the server to process the destruction ---
+        world.tick()
         
         # Reset Synchronous Settings
         settings = world.get_settings()
