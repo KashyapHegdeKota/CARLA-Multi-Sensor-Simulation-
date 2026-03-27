@@ -32,7 +32,7 @@ import pygame
 import numpy as np
 import time
 from math import radians
-
+from PIL import Image
 from pygame.locals import K_ESCAPE, K_2, K_3, K_r
 
 # --- Bounding Box Constants & Functions ---
@@ -336,7 +336,7 @@ def main():
         current_waypoint = carla_map.get_waypoint(start_transform.location)
         
         # Start the drone 10 meters in the air, pitched slightly down
-        drone_altitude = 10.0
+        drone_altitude = 20.0
         drone_pitch = -15.0
         drone_speed = 1.0 # Meters per tick
         
@@ -447,7 +447,9 @@ def main():
             clock.tick(60)
             
             if record:
-                pygame.image.save(display,f'_out/{image.frame:08d}.png')
+                raw = pygame.surfarray.array3d(display)
+                raw = np.transpose(raw, (1, 0, 2))
+                Image.fromarray(raw).save(f'_out/{image.frame:08d}.png')
                 with open(f"_out/{snapshot.frame}.json", 'w') as f:
                     json.dump(json_frame_data, f)
 
