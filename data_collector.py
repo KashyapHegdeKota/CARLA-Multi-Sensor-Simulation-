@@ -102,7 +102,9 @@ def bbox_3d_for_actor(actor, camera_bp, camera):
     K_b = build_projection_matrix(image_w, image_h, fov, is_behind_camera=True)
 
     npc_bbox_loc = actor.get_transform().location + actor.bounding_box.location
-    npc_loc_ego_space = camera.get_transform().inverse_transform(npc_bbox_loc)
+    npc_bbox_loc_arr = np.array([npc_bbox_loc.x, npc_bbox_loc.y, npc_bbox_loc.z, 1.0])
+    npc_loc_ego = np.dot(world_2_camera, npc_bbox_loc_arr)
+    npc_loc_ego_space = carla.Location(x=float(npc_loc_ego[0]), y=float(npc_loc_ego[1]), z=float(npc_loc_ego[2]))
 
     verts = [v for v in actor.bounding_box.get_world_vertices(actor.get_transform())]
     projection = []
@@ -399,7 +401,7 @@ def main():
             img = np.reshape(np.copy(image.raw_data), (image.height, image.width, 4))
             
             if record:
-                image.save_to_disk('_out/%08d' % image.frame)
+                pygame.image.save(display,f'_out/{image.frame:08d}.png')
 
             inst_seg_image = inst_queue.get()
             inst_seg = np.reshape(np.copy(inst_seg_image.raw_data), (inst_seg_image.height, inst_seg_image.width, 4))
