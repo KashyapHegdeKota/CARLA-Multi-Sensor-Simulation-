@@ -34,6 +34,7 @@ import time
 from math import radians
 from PIL import Image
 from pygame.locals import K_ESCAPE, K_2, K_3, K_r
+import cv2
 
 # --- Bounding Box Constants & Functions ---
 EDGES = [[0,1], [1,3], [3,2], [2,0], [0,4], [4,5], [5,1], [5,7], [7,6], [6,4], [6,2], [7,3]]
@@ -366,6 +367,10 @@ def main():
         display_3d = True
         run_simulation = True
 
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_out = cv2.VideoWriter('_out/video/output.mp4', fourcc, 20.0, (args.width, args.height))
+        start_time = None
+
         while run_simulation:
             # 1. Handle Pygame Events
             for event in pygame.event.get():
@@ -393,6 +398,9 @@ def main():
             # 3. Tick Simulation
             world.tick()
             snapshot = world.get_snapshot()
+            
+            if start_time is None:
+                start_time = snapshot.timestamp.elapsed_seconds
 
             json_frame_data = {
                 'frame_id': snapshot.frame,
@@ -451,17 +459,26 @@ def main():
             clock.tick(60)
             
             if record:
+
                 raw = pygame.surfarray.array3d(display)
                 raw = np.transpose(raw, (1, 0, 2))
-                Image.fromarray(raw).save(f'_out/{image.frame:08d}.png')
+                Image.fromarray(raw).save(f'_out/image_{time.time():.2f}_{image.frame:08d}.png')
+
+                frame_bgr = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
+                video_out.write(frame_bgr)
+
                 with open(f"_out/{snapshot.frame}.json", 'w') as f:
                     json.dump(json_frame_data, f)
-
+            if snapshot.timestamp.elapsed_seconds - start_time > 30: # Stop after 30 seconds
+                run_simulation = False
     except KeyboardInterrupt:
         print('\nCancelled by user. Bye!')
     finally:
         print('\nCleaning up actors...')
         
+        if video_out in locals():
+            video_out.release()
+
         # Destroy sensors (drone)
         if 'drone_camera' in locals():
             drone_camera.stop()
