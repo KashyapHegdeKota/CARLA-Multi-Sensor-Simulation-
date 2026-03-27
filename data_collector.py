@@ -400,8 +400,7 @@ def main():
             image = image_queue.get()
             img = np.reshape(np.copy(image.raw_data), (image.height, image.width, 4))
             
-            if record:
-                pygame.image.save(display,f'_out/{image.frame:08d}.png')
+            
 
             inst_seg_image = inst_queue.get()
             inst_seg = np.reshape(np.copy(inst_seg_image.raw_data), (inst_seg_image.height, inst_seg_image.width, 4))
@@ -448,6 +447,7 @@ def main():
             clock.tick(60)
             
             if record:
+                pygame.image.save(display,f'_out/{image.frame:08d}.png')
                 with open(f"_out/{snapshot.frame}.json", 'w') as f:
                     json.dump(json_frame_data, f)
 
