@@ -221,10 +221,10 @@ def main():
     argparser.add_argument('--host', metavar='H', default='127.0.0.1', help='IP of the host server (default: 127.0.0.1)')
     argparser.add_argument('-p', '--port', metavar='P', default=2000, type=int, help='TCP port to listen to (default: 2000)')
     argparser.add_argument('-n', '--number-of-vehicles', metavar='N', default=30, type=int, help='Number of vehicles (default: 30)')
-    argparser.add_argument('-w', '--number-of-walkers', metavar='W', default=10, type=int, help='Number of walkers (default: 10)')
+    argparser.add_argument('-w', '--number-of-walkers', metavar='W', default=0, type=int, help='Number of walkers (default: 0)')
     argparser.add_argument('-d', '--distance', metavar='D', default=50, type=int, help='Actor BB rendering distance threshold')
     argparser.add_argument('--res', metavar='WIDTHxHEIGHT', default='1280x720', help='window resolution (default: 1280x720)')
-    argparser.add_argument('--tm-port', metavar='P', default=8000, type=int, help='Port to communicate with TM (default: 8000)')
+    argparser.add_argument('--tm-port', metavar='P', default=8268, type=int, help='Port to communicate with TM (default: 8268)')
     argparser.add_argument('--seed', metavar='S', type=int, help='Set random device seed')
     
     args = argparser.parse_args()
@@ -496,7 +496,13 @@ def main():
         if 'video_out' in locals():
             video_out.release()
             print('Video saved successfully.')
+        settings = world.get_settings()
+        settings.synchronous_mode = False
+        settings.fixed_delta_seconds = None
+        world.apply_settings(settings)
 
+        if 'traffic_manager' in locals():
+            traffic_manager.set_synchronous_mode(False)
         # Destroy sensors (drone)
         if 'drone_camera' in locals():
             drone_camera.stop()
