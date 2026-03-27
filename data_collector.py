@@ -245,6 +245,9 @@ def main():
     world = client.get_world()
     bp_lib = world.get_blueprint_library()
     traffic_manager = client.get_trafficmanager(args.tm_port)
+    traffic_manager.global_percentage_speed_difference(30.0) # Drive 30% under the speed limit
+    traffic_manager.set_global_distance_to_leading_vehicle(2.5) # Maintain a 2.5-meter gap
+    traffic_manager.set_synchronous_mode(True)
     carla_map = world.get_map()
 
     # Enable Synchronous Mode
