@@ -82,7 +82,8 @@ def decode_instance_segmentation(img_rgba: np.ndarray):
     return semantic_labels, actor_ids
 
 def bbox_2d_for_actor(actor, actor_ids: np.ndarray, semantic_labels: np.ndarray):
-    mask = (actor_ids == actor.id)
+    actor_id_16bit = actor.id & 0xFFFF
+    mask = (actor_ids == actor_id_16bit)
     if not np.any(mask):
         return None
     ys, xs = np.where(mask)
@@ -359,7 +360,7 @@ def main():
 
         # Loop State
         record = True
-        display_3d = False
+        display_3d = True
         run_simulation = True
 
         while run_simulation:
