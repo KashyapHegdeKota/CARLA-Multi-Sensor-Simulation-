@@ -153,11 +153,11 @@ def bbox_3d_for_actor(actor, camera_bp, camera):
             },
             'projection': projection}
 
-def visualize_2d_bboxes(surface, img, bboxes):
+def visualize_2d_bboxes(surface, img, bboxes, font):
     rgb_img = img[:, :, :3][:, :, ::-1] 
     frame_surface = pygame.surfarray.make_surface(np.transpose(rgb_img[..., 0:3], (1,0,2)))
     surface.blit(frame_surface, (0, 0))
-    font = pygame.font.SysFont("Arial", 18)
+    
     for item in bboxes:
         bbox = item['2d']
         if bbox is not None:
@@ -165,11 +165,12 @@ def visualize_2d_bboxes(surface, img, bboxes):
             label = SEMANTIC_MAP[bbox['semantic_label']][0]
             color = SEMANTIC_MAP[bbox['semantic_label']][1]
             pygame.draw.rect(surface, color, pygame.Rect(xmin, ymin, xmax-xmin, ymax-ymin), 2)
+            # Use the passed font object
             text_surface = font.render(label, True, (255,255,255), color) 
             text_rect = text_surface.get_rect(topleft=(xmin, ymin-20))
             surface.blit(text_surface, text_rect)
 
-def visualize_3d_bboxes(surface, img, bboxes):
+def visualize_3d_bboxes(surface, img, bboxes, font):
     rgb_img = img[:, :, :3][:, :, ::-1] 
     frame_surface = pygame.surfarray.make_surface(np.transpose(rgb_img[..., 0:3], (1,0,2)))
     surface.blit(frame_surface, (0, 0))
@@ -187,11 +188,11 @@ def visualize_3d_bboxes(surface, img, bboxes):
         if n > 0:
             mean_x /= n
             mean_y /= n
-            font = pygame.font.SysFont("Arial", 18)
+            # Use the passed font object
             text_surface = font.render(SEMANTIC_MAP[bbox['semantic_label']][0], True, (255,255,255), color)
             text_rect = text_surface.get_rect(topleft=(mean_x, mean_y))
             surface.blit(text_surface, text_rect)
-
+            
 def get_actor_velocity_dict(actor):
     v = actor.get_velocity()
     return {'x': v.x, 'y': v.y, 'z': v.z}
@@ -242,6 +243,8 @@ def main():
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
 
     pygame.init()
+    pygame.font.init()
+    default_font = pygame.font.Font(None, 18)
     clock = pygame.time.Clock()
     pygame.display.set_caption("Auto Drone View & Bounding Boxes")
     display = pygame.display.set_mode((args.width, args.height), pygame.HWSURFACE | pygame.DOUBLEBUF)
@@ -476,9 +479,9 @@ def main():
             # 6. Render to Pygame
             display.fill((0,0,0))
             if display_3d:
-                visualize_3d_bboxes(display, img, frame_bboxes)
+                visualize_3d_bboxes(display, img, frame_bboxes, default_font)
             else:
-                visualize_2d_bboxes(display, img, frame_bboxes)
+                visualize_2d_bboxes(display, img, frame_bboxes, default_font)
             pygame.display.flip()
             clock.tick(60)
             
