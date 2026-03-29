@@ -435,13 +435,16 @@ def main():
                 'objects': [] 
             }
 
-            # 4. Read Sensors
-            image = image_queue.get()
+            try:
+                # 4. Read Sensors
+                image = image_queue.get()
+                inst_seg_image = inst_queue.get()
+            except queue.Empty:
+                print("Warning: No image received from camera sensor.")
+                continue
+            
+            
             img = np.reshape(np.copy(image.raw_data), (image.height, image.width, 4))
-            
-            
-
-            inst_seg_image = inst_queue.get()
             inst_seg = np.reshape(np.copy(inst_seg_image.raw_data), (inst_seg_image.height, inst_seg_image.width, 4))
             semantic_labels, actor_ids = decode_instance_segmentation(inst_seg)
 
