@@ -16,6 +16,9 @@ Drone Controls:
 """
 
 import carla
+import socket
+from contextlib import closing
+
 
 #Spawning actors
 SpawnActor = carla.command.SpawnActor
@@ -54,6 +57,12 @@ SEMANTIC_MAP = {
     27: ('rail track', (230,150,140)), 28: ('guard rail', (180,165,180))
 }
 
+def get_open_port():
+    """Asks the OS to allocate a free port and returns the port number"""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
 def build_projection_matrix(w, h, fov, is_behind_camera=False):
     focal = w / (2.0 * np.tan(fov * np.pi / 360.0))
     K = np.identity(3)
@@ -247,7 +256,10 @@ def main():
     
     world = client.get_world()
     bp_lib = world.get_blueprint_library()
-    traffic_manager = client.get_trafficmanager(args.tm_port)
+
+    dynamic_tm_port = get_open_port()
+    logging.info(f"Using dynamic Traffic Manager port: {dynamic_tm_port}")
+    traffic_manager = client.get_trafficmanager(dynamic_tm_port)
     traffic_manager.global_percentage_speed_difference(30.0) # Drive 30% under the speed limit
     traffic_manager.set_global_distance_to_leading_vehicle(2.5) # Maintain a 2.5-meter gap
     traffic_manager.set_synchronous_mode(True)
