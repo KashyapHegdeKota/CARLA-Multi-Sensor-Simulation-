@@ -437,8 +437,8 @@ def main():
 
             try:
                 # 4. Read Sensors
-                image = image_queue.get()
-                inst_seg_image = inst_queue.get()
+                image = image_queue.get(timeout=2.0)
+                inst_seg_image = inst_queue.get(timeout=2.0)
             except queue.Empty:
                 print("Warning: No image received from camera sensor.")
                 continue
@@ -487,7 +487,9 @@ def main():
                 visualize_2d_bboxes(display, img, frame_bboxes, default_font)
             pygame.display.flip()
             clock.tick(60)
-            
+            recorded_frames = 0
+            target_frames = 30*20 # 30 seconds at 20 FPS
+
             if record:
                 raw = pygame.surfarray.array3d(display)
                 raw = np.transpose(raw, (1, 0, 2))
@@ -501,6 +503,12 @@ def main():
                 # Save JSON to the image directory
                 with open(f"{img_dir}/{snapshot.frame}.json", 'w') as f:
                     json.dump(json_frame_data, f)
+                recorded_frames += 1
+
+                if recorded_frames >= target_frames:
+                    print(f"\n[Timer] Recorded {recorded_frames} frames. Stopping recording...")
+                    record = False
+                    run_simulation = False
                     
             if snapshot.timestamp.elapsed_seconds - start_time >= 30: # Stop after 30 seconds
                 print("\n[Timer] 30 seconds reached. Initiating shutdown...")
