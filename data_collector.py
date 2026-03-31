@@ -270,7 +270,7 @@ def main():
     default_font = pygame.font.Font(None, 18)
     clock = pygame.time.Clock()
     pygame.display.set_caption("Auto Drone View & Bounding Boxes")
-    display = pygame.display.set_mode((args.width, args.height), pygame.HWSURFACE | pygame.DOUBLEBUF)
+    display = pygame.display.set_mode((args.width * 2, args.height), pygame.HWSURFACE | pygame.DOUBLEBUF)
 
     client = carla.Client(args.host, args.port)
     client.set_timeout(10.0)
@@ -504,7 +504,7 @@ def main():
             events = np.frombuffer(dvs_data.raw_data, dtype=np.dtype([
                 ('x', np.uint16),
                 ('y', np.uint16),
-                ('t', np.float64),
+                ('t', np.int64),
                 ('pol', np.bool_)
             ]))
 
@@ -547,7 +547,8 @@ def main():
                                 } if npc_bbox_2d else None,
                                 'light_state': vehicle_light_state_to_dict(npc) if npc.type_id.startswith('vehicle') else None
                             })
-            rgb_with_bbox = draw_bboxes_on_frame(img, frame_bboxes, display_3d, default_font)
+            rgb_frame = img[:, :, :3][:, :, ::-1]
+            rgb_with_bbox = draw_bboxes_on_frame(rgb_frame, frame_bboxes, display_3d, default_font)
             dvs_with_bbox = draw_bboxes_on_frame(dvs_frame, frame_bboxes, display_3d, default_font)
 
             rgb_surf = pygame.surfarray.make_surface(np.transpose(rgb_with_bbox, (1, 0, 2)))
@@ -587,11 +588,6 @@ def main():
                     h5_y     [event_cursor:event_cursor + n] = events['y']
                     h5_t     [event_cursor:event_cursor + n] = events['t']
                     h5_pol   [event_cursor:event_cursor + n] = events['pol']
-                    
-                    h5_events[event_cursor:event_cursor + n] = events['x']
-                    h5_y     [event_cursor:event_cursor + n] = events['y']
-                    h5_t     [event_cursor:event_cursor + n] = events['t']
-                    h5_pol   [event_cursor:event_cursor + n] = events['pol']
 
                     frame_idx = np.array([[event_cursor, event_cursor + n]], dtype=np.int64)
                     h5_frames.resize(h5_frames.shape[0] + 1, axis=0)
@@ -613,10 +609,15 @@ def main():
         print('\nCleaning up actors...')
         
         # Notice the quotes around 'video_out'
-        if 'video_out' in locals():
-            video_out_dvs.release()
+        if 'video_out_rgb' in locals():
             video_out_rgb.release()
-            print('Video saved successfully.')
+            print('RGB Video saved successfully.')
+        if 'video_out_dvs' in locals():
+            video_out_dvs.release()
+            print('DVS Video saved successfully.')
+        if 'combined_video' in locals():
+            combined_video.release()
+            print('Combined Video saved successfully.')
         if 'h5_file' in locals():
             h5_file.close()
         settings = world.get_settings()
