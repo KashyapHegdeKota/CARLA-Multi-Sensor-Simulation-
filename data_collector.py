@@ -402,7 +402,7 @@ def main():
         dvs_bp.set_attribute('negative_threshold', '0.3')
         dvs_bp.set_attribute('sigma_positive_threshold', '0.0')
         dvs_bp.set_attribute('sigma_negative_threshold', '0.0')
-        dvs_bp.set_attribute('refractory_period', '0')
+        #dvs_bp.set_attribute('refractory_period', '0')
         dvs_camera = world.spawn_actor(dvs_bp, carla.Transform(), attach_to=drone_camera)
 
         image_queue = queue.Queue()
