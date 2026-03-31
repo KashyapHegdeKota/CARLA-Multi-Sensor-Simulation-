@@ -18,6 +18,7 @@ Drone Controls:
 import carla
 import socket
 from contextlib import closing
+from tqdm import tqdm
 
 
 #Spawning actors
@@ -398,10 +399,10 @@ def main():
         dvs_bp = bp_lib.find('sensor.camera.dvs')
         dvs_bp.set_attribute('image_size_x', str(args.width))
         dvs_bp.set_attribute('image_size_y', str(args.height))
-        dvs_bp.set_attribute('positive_threshold', '0.3')
-        dvs_bp.set_attribute('negative_threshold', '0.3')
-        dvs_bp.set_attribute('sigma_positive_threshold', '0.0')
-        dvs_bp.set_attribute('sigma_negative_threshold', '0.0')
+        dvs_bp.set_attribute('positive_threshold', '0.5')
+        dvs_bp.set_attribute('negative_threshold', '0.5')
+        dvs_bp.set_attribute('sigma_positive_threshold', '0.1')
+        dvs_bp.set_attribute('sigma_negative_threshold', '0.1')
         #dvs_bp.set_attribute('refractory_period', '0')
         dvs_camera = world.spawn_actor(dvs_bp, carla.Transform(), attach_to=drone_camera)
 
@@ -442,6 +443,9 @@ def main():
         h5_file.attrs['sensor'] = 'dvs'
 
         event_cursor = 0
+        dvs_accumulator = np.zeros((args.height, args.width, 3), dtype=np.float32)
+        DECAY = 0.85 # Decay factor for the DVS accumulator, how quickly old events fade away
+        MIN_EVENT_COUNT = 3 # Minimum number of events in a pixel to be visualized
 
         start_time = None
         
@@ -451,157 +455,170 @@ def main():
         run_simulation = True
         recorded_frames = 0
         target_frames = 30*20 # 30 seconds at 20 FPS
-        while run_simulation:
-            # 1. Handle Pygame Events
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    run_simulation = False
-                elif event.type == pygame.KEYUP:
-                    if event.key == K_ESCAPE: run_simulation = False
-                    elif event.key == K_r: record = not record
-                    elif event.key == K_2: display_3d = False
-                    elif event.key == K_3: display_3d = True
+        with tqdm(total=target_frames, desc="Recording", unit="frame",
+                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} frames [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
 
-            # 2. Process Auto-Pilot Waypoint Following
-            # Ask CARLA for the next waypoint at the specified distance
-            next_waypoints = current_waypoint.next(drone_speed)
-            
-            # If an intersection offers multiple paths, just pick the first one
-            if len(next_waypoints) > 0:
-                current_waypoint = next_waypoints[0]
+            while run_simulation:
+                # 1. Handle Pygame Events
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        run_simulation = False
+                    elif event.type == pygame.KEYUP:
+                        if event.key == K_ESCAPE: run_simulation = False
+                        elif event.key == K_r: record = not record
+                        elif event.key == K_2: display_3d = False
+                        elif event.key == K_3: display_3d = True
 
-            # Update the camera transform
-            new_loc = current_waypoint.transform.location + carla.Location(z=drone_altitude)
-            new_rot = carla.Rotation(pitch=drone_pitch, yaw=current_waypoint.transform.rotation.yaw)
-            drone_camera.set_transform(carla.Transform(new_loc, new_rot))
-
-            # 3. Tick Simulation
-            world.tick()
-            snapshot = world.get_snapshot()
-            
-            if start_time is None:
-                start_time = snapshot.timestamp.elapsed_seconds
-
-            json_frame_data = {
-                'frame_id': snapshot.frame,
-                'timestamp': snapshot.timestamp.elapsed_seconds,
-                'objects': [] 
-            }
-
-            try:
-                # 4. Read Sensors
-                image = image_queue.get(timeout=2.0)
-                dvs_data = dvs_queue.get(timeout=2.0)
-                inst_seg_image = inst_queue.get(timeout=2.0)
-            except queue.Empty:
-                print("Warning: No image received from camera sensor.")
-                continue
-            
-            
-            img = np.reshape(np.copy(image.raw_data), (image.height, image.width, 4))
-            inst_seg = np.reshape(np.copy(inst_seg_image.raw_data), (inst_seg_image.height, inst_seg_image.width, 4))
-
-            events = np.frombuffer(dvs_data.raw_data, dtype=np.dtype([
-                ('x', np.uint16),
-                ('y', np.uint16),
-                ('t', np.int64),
-                ('pol', np.bool_)
-            ]))
-
-            dvs_frame = np.zeros((args.height, args.width, 3), dtype=np.uint8)
-
-            if len(events) > 0:
-                pos = events[events['pol'] == True]
-                neg = events[events['pol'] == False]
-                dvs_frame[pos['y'], pos['x']] = [0, 255, 0]  # Green for positive events
-                dvs_frame[neg['y'], neg['x']] = [255, 0, 0]  # Red for negative events
-            semantic_labels, actor_ids = decode_instance_segmentation(inst_seg)
-
-            frame_bboxes = []
-
-            # 5. Calculate Bounding Boxes
-            for npc in world.get_actors().filter('*'):
-                if npc.id != drone_camera.id and (npc.type_id.startswith('vehicle') or npc.type_id.startswith('walker')):
-                    dist = npc.get_transform().location.distance(drone_camera.get_transform().location)
-
-                    if dist < args.distance:
-                        forward_vec = drone_camera.get_transform().get_forward_vector()
-                        inter_actor_vec = npc.get_transform().location - drone_camera.get_transform().location
-
-                        if forward_vec.dot(inter_actor_vec) > 0:
-                            npc_bbox_2d = bbox_2d_for_actor(npc, actor_ids, semantic_labels)
-                            npc_bbox_3d = bbox_3d_for_actor(npc, rgb_bp, drone_camera)
-                            frame_bboxes.append({'3d': npc_bbox_3d, '2d': npc_bbox_2d})
-
-                            json_frame_data['objects'].append({
-                                'id': npc.id,
-                                'class': SEMANTIC_MAP[npc.semantic_tags[0]][0] if len(npc.semantic_tags) > 0 else "unknown",
-                                'blueprint_id': npc.type_id,
-                                'velocity': get_actor_velocity_dict(npc),
-                                'bbox_3d': npc_bbox_3d['bbox_3d'],
-                                'bbox_2d': {
-                                    'xmin': int(npc_bbox_2d['bbox_2d'][0]),
-                                    'ymin': int(npc_bbox_2d['bbox_2d'][1]),
-                                    'xmax': int(npc_bbox_2d['bbox_2d'][2]),
-                                    'ymax': int(npc_bbox_2d['bbox_2d'][3]),
-                                } if npc_bbox_2d else None,
-                                'light_state': vehicle_light_state_to_dict(npc) if npc.type_id.startswith('vehicle') else None
-                            })
-            rgb_frame = img[:, :, :3][:, :, ::-1]
-            rgb_with_bbox = draw_bboxes_on_frame(rgb_frame, frame_bboxes, display_3d, default_font)
-            dvs_with_bbox = draw_bboxes_on_frame(dvs_frame, frame_bboxes, display_3d, default_font)
-
-            rgb_surf = pygame.surfarray.make_surface(np.transpose(rgb_with_bbox, (1, 0, 2)))
-            dvs_surf = pygame.surfarray.make_surface(np.transpose(dvs_with_bbox, (1, 0, 2)))
-
-            # 6. Render to Pygame
-            display.fill((0,0,0))
-            display.blit(rgb_surf, (0, 0))
-            display.blit(dvs_surf, (args.width, 0))
-            pygame.display.flip()
-            clock.tick(60)
-            
-
-            if record:
-                raw = pygame.surfarray.array3d(display)
-                raw = np.transpose(raw, (1, 0, 2))
+                # 2. Process Auto-Pilot Waypoint Following
+                # Ask CARLA for the next waypoint at the specified distance
+                next_waypoints = current_waypoint.next(drone_speed)
                 
-                # Save to the new image directory
-                Image.fromarray(rgb_with_bbox).save(f'{img_dir}/rgb_{snapshot.frame:08d}.png')
-                Image.fromarray(dvs_with_bbox).save(f'{img_dir}/dvs_{snapshot.frame:08d}.png')
-                video_out_rgb.write(cv2.cvtColor(rgb_with_bbox, cv2.COLOR_RGB2BGR))
-                video_out_dvs.write(cv2.cvtColor(dvs_with_bbox, cv2.COLOR_RGB2BGR))
-                combined = np.hstack([
-                    cv2.cvtColor(rgb_with_bbox, cv2.COLOR_RGB2BGR),
-                    cv2.cvtColor(dvs_with_bbox, cv2.COLOR_RGB2BGR)
-                ])
-                combined_video.write(combined)
+                # If an intersection offers multiple paths, just pick the first one
+                if len(next_waypoints) > 0:
+                    current_waypoint = next_waypoints[0]
+
+                # Update the camera transform
+                new_loc = current_waypoint.transform.location + carla.Location(z=drone_altitude)
+                new_rot = carla.Rotation(pitch=drone_pitch, yaw=current_waypoint.transform.rotation.yaw)
+                drone_camera.set_transform(carla.Transform(new_loc, new_rot))
+
+                # 3. Tick Simulation
+                world.tick()
+                snapshot = world.get_snapshot()
                 
+                if start_time is None:
+                    start_time = snapshot.timestamp.elapsed_seconds
+
+                json_frame_data = {
+                    'frame_id': snapshot.frame,
+                    'timestamp': snapshot.timestamp.elapsed_seconds,
+                    'objects': [] 
+                }
+
+                try:
+                    # 4. Read Sensors
+                    image = image_queue.get(timeout=2.0)
+                    dvs_data = dvs_queue.get(timeout=2.0)
+                    inst_seg_image = inst_queue.get(timeout=2.0)
+                except queue.Empty:
+                    print("Warning: No image received from camera sensor.")
+                    continue
+                
+                
+                img = np.reshape(np.copy(image.raw_data), (image.height, image.width, 4))
+                inst_seg = np.reshape(np.copy(inst_seg_image.raw_data), (inst_seg_image.height, inst_seg_image.width, 4))
+
+                events = np.frombuffer(dvs_data.raw_data, dtype=np.dtype([
+                    ('x', np.uint16),
+                    ('y', np.uint16),
+                    ('t', np.int64),
+                    ('pol', np.bool_)
+                ]))
+
+
+                dvs_accumulator *= DECAY
+
                 if len(events) > 0:
-                    n = len(events)
-                    h5_events.resize(event_cursor + n, axis=0)
-                    h5_y.resize(event_cursor + n, axis=0)
-                    h5_t.resize(event_cursor + n, axis=0)
-                    h5_pol.resize(event_cursor + n, axis=0)
+                    pos_events = events[events['pol'] == True]
+                    neg_events = events[events['pol'] == False]
+
+                    np.add.at(dvs_accumulator[:,:,1], (pos_events['y'], pos_events['x']), 40.0) # Green for positive events    
+                    np.add.at(dvs_accumulator[:,:,0], (neg_events['y'], neg_events['x']), 40.0) # Red for negative events
+                    np.clip(dvs_accumulator, 0, 255, out=dvs_accumulator)
+
+                    event_count = np.zeros((args.height, args.width), dtype=np.uint16)
+                    np.add.at(event_count, (events['y'], events['x']), 1)
+                    dvs_accumulator[event_count < MIN_EVENT_COUNT] *= 0.5
+                dvs_frame = dvs_accumulator.astype(np.uint8)
+                
+                semantic_labels, actor_ids = decode_instance_segmentation(inst_seg)
+
+                frame_bboxes = []
+
+                # 5. Calculate Bounding Boxes
+                for npc in world.get_actors().filter('*'):
+                    if npc.id != drone_camera.id and (npc.type_id.startswith('vehicle') or npc.type_id.startswith('walker')):
+                        dist = npc.get_transform().location.distance(drone_camera.get_transform().location)
+
+                        if dist < args.distance:
+                            forward_vec = drone_camera.get_transform().get_forward_vector()
+                            inter_actor_vec = npc.get_transform().location - drone_camera.get_transform().location
+
+                            if forward_vec.dot(inter_actor_vec) > 0:
+                                npc_bbox_2d = bbox_2d_for_actor(npc, actor_ids, semantic_labels)
+                                npc_bbox_3d = bbox_3d_for_actor(npc, rgb_bp, drone_camera)
+                                frame_bboxes.append({'3d': npc_bbox_3d, '2d': npc_bbox_2d})
+
+                                json_frame_data['objects'].append({
+                                    'id': npc.id,
+                                    'class': SEMANTIC_MAP[npc.semantic_tags[0]][0] if len(npc.semantic_tags) > 0 else "unknown",
+                                    'blueprint_id': npc.type_id,
+                                    'velocity': get_actor_velocity_dict(npc),
+                                    'bbox_3d': npc_bbox_3d['bbox_3d'],
+                                    'bbox_2d': {
+                                        'xmin': int(npc_bbox_2d['bbox_2d'][0]),
+                                        'ymin': int(npc_bbox_2d['bbox_2d'][1]),
+                                        'xmax': int(npc_bbox_2d['bbox_2d'][2]),
+                                        'ymax': int(npc_bbox_2d['bbox_2d'][3]),
+                                    } if npc_bbox_2d else None,
+                                    'light_state': vehicle_light_state_to_dict(npc) if npc.type_id.startswith('vehicle') else None
+                                })
+                rgb_frame = img[:, :, :3][:, :, ::-1]
+                rgb_with_bbox = draw_bboxes_on_frame(rgb_frame, frame_bboxes, display_3d, default_font)
+                dvs_with_bbox = draw_bboxes_on_frame(dvs_frame, frame_bboxes, display_3d, default_font)
+
+                rgb_surf = pygame.surfarray.make_surface(np.transpose(rgb_with_bbox, (1, 0, 2)))
+                dvs_surf = pygame.surfarray.make_surface(np.transpose(dvs_with_bbox, (1, 0, 2)))
+
+                # 6. Render to Pygame
+                display.fill((0,0,0))
+                display.blit(rgb_surf, (0, 0))
+                display.blit(dvs_surf, (args.width, 0))
+                pygame.display.flip()
+                clock.tick(60)
+                
+
+                if record:
+                    raw = pygame.surfarray.array3d(display)
+                    raw = np.transpose(raw, (1, 0, 2))
                     
-                    h5_events[event_cursor:event_cursor + n] = events['x']
-                    h5_y     [event_cursor:event_cursor + n] = events['y']
-                    h5_t     [event_cursor:event_cursor + n] = events['t']
-                    h5_pol   [event_cursor:event_cursor + n] = events['pol']
+                    # Save to the new image directory
+                    Image.fromarray(rgb_with_bbox).save(f'{img_dir}/rgb_{snapshot.frame:08d}.png')
+                    Image.fromarray(dvs_with_bbox).save(f'{img_dir}/dvs_{snapshot.frame:08d}.png')
+                    video_out_rgb.write(cv2.cvtColor(rgb_with_bbox, cv2.COLOR_RGB2BGR))
+                    video_out_dvs.write(cv2.cvtColor(dvs_with_bbox, cv2.COLOR_RGB2BGR))
+                    combined = np.hstack([
+                        cv2.cvtColor(rgb_with_bbox, cv2.COLOR_RGB2BGR),
+                        cv2.cvtColor(dvs_with_bbox, cv2.COLOR_RGB2BGR)
+                    ])
+                    combined_video.write(combined)
+                    
+                    if len(events) > 0:
+                        n = len(events)
+                        h5_events.resize(event_cursor + n, axis=0)
+                        h5_y.resize(event_cursor + n, axis=0)
+                        h5_t.resize(event_cursor + n, axis=0)
+                        h5_pol.resize(event_cursor + n, axis=0)
+                        
+                        h5_events[event_cursor:event_cursor + n] = events['x']
+                        h5_y     [event_cursor:event_cursor + n] = events['y']
+                        h5_t     [event_cursor:event_cursor + n] = events['t']
+                        h5_pol   [event_cursor:event_cursor + n] = events['pol']
 
-                    frame_idx = np.array([[event_cursor, event_cursor + n]], dtype=np.int64)
-                    h5_frames.resize(h5_frames.shape[0] + 1, axis=0)
-                    h5_frames[-1] = frame_idx
+                        frame_idx = np.array([[event_cursor, event_cursor + n]], dtype=np.int64)
+                        h5_frames.resize(h5_frames.shape[0] + 1, axis=0)
+                        h5_frames[-1] = frame_idx
 
-                    event_cursor += n
-                # Save JSON to the image directory
-                with open(f"{img_dir}/{snapshot.frame}.json", 'w') as f:
-                    json.dump(json_frame_data, f)
-                recorded_frames += 1
+                        event_cursor += n
+                    
+                    # Save JSON to the image directory
+                    with open(f"{img_dir}/{snapshot.frame}.json", 'w') as f:
+                        json.dump(json_frame_data, f)
+                    recorded_frames += 1
 
-                if recorded_frames >= target_frames:
-                    print(f"\n[Timer] Recorded {recorded_frames} frames. Stopping recording...")
-                    run_simulation = False
+                    if recorded_frames >= target_frames:
+                        print(f"\n[Timer] Recorded {recorded_frames} frames. Stopping recording...")
+                        run_simulation = False
                     
     except KeyboardInterrupt:
         print('\nCancelled by user. Bye!')
