@@ -40,7 +40,7 @@ from pygame.locals import K_ESCAPE, K_2, K_3, K_r
 import cv2
 import os
 from datetime import datetime
-
+import h5py
 # --- Bounding Box Constants & Functions ---
 EDGES = [[0,1], [1,3], [3,2], [2,0], [0,4], [4,5], [5,1], [5,7], [7,6], [6,4], [6,2], [7,3]]
 
@@ -192,7 +192,30 @@ def visualize_3d_bboxes(surface, img, bboxes, font):
             text_surface = font.render(SEMANTIC_MAP[bbox['semantic_label']][0], True, (255,255,255), color)
             text_rect = text_surface.get_rect(topleft=(mean_x, mean_y))
             surface.blit(text_surface, text_rect)
-            
+
+# Convert both to pygame surfaces, draw bboxes on each
+def draw_bboxes_on_frame(frame_rgb, frame_bboxes, display_3d, font):
+    """Draw bboxes onto a numpy RGB frame and return it."""
+    surf = pygame.Surface((frame_rgb.shape[1], frame_rgb.shape[0]))
+    pygame.surfarray.blit_array(surf, np.transpose(frame_rgb, (1, 0, 2)))
+    
+    if display_3d:
+        for item in frame_bboxes:
+            bbox = item['3d']
+            color = SEMANTIC_MAP[bbox['semantic_label']][1]
+            for line in bbox['projection']:
+                pygame.draw.line(surf, color, (line[0], line[1]), (line[2], line[3]), 2)
+    else:
+        for item in frame_bboxes:
+            bbox = item['2d']
+            if bbox:
+                xmin, ymin, xmax, ymax = [int(v) for v in bbox['bbox_2d']]
+                color = SEMANTIC_MAP[bbox['semantic_label']][1]
+                pygame.draw.rect(surf, color, pygame.Rect(xmin, ymin, xmax-xmin, ymax-ymin), 2)
+    
+    return np.transpose(pygame.surfarray.array3d(surf), (1, 0, 2))
+
+
 def get_actor_velocity_dict(actor):
     v = actor.get_velocity()
     return {'x': v.x, 'y': v.y, 'z': v.z}
@@ -347,12 +370,11 @@ def main():
         logging.info(f"Spawned {len(vehicles_list)} vehicles and {len(walkers_list)} walkers.")
 
         # --------------
-        # Spawn Auto-Drone (Camera)
+        # Spawn Auto-Drone (Camera) RGB
         # --------------
-        camera_bp = bp_lib.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', str(args.width))
-        camera_bp.set_attribute('image_size_y', str(args.height))
-        
+        rgb_bp = bp_lib.find('sensor.camera.rgb')
+        rgb_bp.set_attribute('image_size_x', str(args.width))
+        rgb_bp.set_attribute('image_size_y', str(args.height))
         # Initialize Waypoint Tracking
         start_transform = random.choice(spawn_points)
         current_waypoint = carla_map.get_waypoint(start_transform.location)
@@ -366,12 +388,22 @@ def main():
             current_waypoint.transform.location + carla.Location(z=drone_altitude), 
             carla.Rotation(pitch=drone_pitch, yaw=current_waypoint.transform.rotation.yaw)
         )
-        drone_camera = world.spawn_actor(camera_bp, drone_transform)
+        drone_camera = world.spawn_actor(rgb_bp, drone_transform)
 
         inst_camera_bp = bp_lib.find('sensor.camera.instance_segmentation')
         inst_camera_bp.set_attribute('image_size_x', str(args.width))
         inst_camera_bp.set_attribute('image_size_y', str(args.height))
         inst_camera = world.spawn_actor(inst_camera_bp, carla.Transform(), attach_to=drone_camera)
+
+        dvs_bp = bp_lib.find('sensor.camera.dvs')
+        dvs_bp.set_attribute('image_size_x', str(args.width))
+        dvs_bp.set_attribute('image_size_y', str(args.height))
+        dvs_bp.set_attribute('positive_threshold', '0.3')
+        dvs_bp.set_attribute('negative_threshold', '0.3')
+        dvs_bp.set_attribute('sigma_positive_threshold', '0.0')
+        dvs_bp.set_attribute('sigma_negative_threshold', '0.0')
+        dvs_bp.set_attribute('refractory_period', '0')
+        dvs_camera = world.spawn_actor(dvs_bp, carla.Transform(), attach_to=drone_camera)
 
         image_queue = queue.Queue()
         drone_camera.listen(image_queue.put)
@@ -379,6 +411,8 @@ def main():
         inst_queue = queue.Queue()
         inst_camera.listen(inst_queue.put)
 
+        dvs_queue = queue.Queue()
+        dvs_camera.listen(dvs_queue.put)
 
         # Generate a unique string for this run (e.g., "20260326_223204")
         run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -390,7 +424,25 @@ def main():
         os.makedirs(vid_dir, exist_ok=True)
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_out = cv2.VideoWriter(f'{vid_dir}/output.mp4', fourcc, 20.0, (args.width, args.height))
+        video_out_rgb = cv2.VideoWriter(f'{vid_dir}/rgb_output.mp4', fourcc, 20.0, (args.width, args.height))
+        video_out_dvs = cv2.VideoWriter(f'{vid_dir}/dvs_output.mp4', fourcc, 20.0, (args.width, args.height))
+        combined_video = cv2.VideoWriter(f'{vid_dir}/combined.mp4', fourcc, 20.0, (args.width * 2, args.height))
+
+        h5_path = f'{vid_dir}/data.h5'
+        h5_file = h5py.File(h5_path, 'w')
+
+        h5_events = h5_file.create_dataset('events/x',   shape=(0,), maxshape=(None,), dtype=np.uint16, chunks=True)
+        h5_y      = h5_file.create_dataset('events/y',   shape=(0,), maxshape=(None,), dtype=np.uint16, chunks=True)
+        h5_t      = h5_file.create_dataset('events/t',   shape=(0,), maxshape=(None,), dtype=np.int64,  chunks=True)
+        h5_pol    = h5_file.create_dataset('events/pol', shape=(0,), maxshape=(None,), dtype=np.bool_,  chunks=True)
+        h5_frames = h5_file.create_dataset('frame_index', shape=(0, 2), maxshape=(None, 2), dtype=np.int64, chunks=True)
+
+        h5_file.attrs['width']  = args.width
+        h5_file.attrs['height'] = args.height
+        h5_file.attrs['sensor'] = 'dvs'
+
+        event_cursor = 0
+
         start_time = None
         
         # Loop State
@@ -439,6 +491,7 @@ def main():
             try:
                 # 4. Read Sensors
                 image = image_queue.get(timeout=2.0)
+                dvs_data = dvs_queue.get(timeout=2.0)
                 inst_seg_image = inst_queue.get(timeout=2.0)
             except queue.Empty:
                 print("Warning: No image received from camera sensor.")
@@ -447,6 +500,21 @@ def main():
             
             img = np.reshape(np.copy(image.raw_data), (image.height, image.width, 4))
             inst_seg = np.reshape(np.copy(inst_seg_image.raw_data), (inst_seg_image.height, inst_seg_image.width, 4))
+
+            events = np.frombuffer(dvs_data.raw_data, dtype=np.dtype([
+                ('x', np.uint16),
+                ('y', np.uint16),
+                ('t', np.float64),
+                ('pol', np.bool_)
+            ]))
+
+            dvs_frame = np.zeros((args.height, args.width, 3), dtype=np.uint8)
+
+            if len(events) > 0:
+                pos = events[events['pol'] == True]
+                neg = events[events['pol'] == False]
+                dvs_frame[pos['y'], pos['x']] = [0, 255, 0]  # Green for positive events
+                dvs_frame[neg['y'], neg['x']] = [255, 0, 0]  # Red for negative events
             semantic_labels, actor_ids = decode_instance_segmentation(inst_seg)
 
             frame_bboxes = []
@@ -462,7 +530,7 @@ def main():
 
                         if forward_vec.dot(inter_actor_vec) > 0:
                             npc_bbox_2d = bbox_2d_for_actor(npc, actor_ids, semantic_labels)
-                            npc_bbox_3d = bbox_3d_for_actor(npc, camera_bp, drone_camera)
+                            npc_bbox_3d = bbox_3d_for_actor(npc, rgb_bp, drone_camera)
                             frame_bboxes.append({'3d': npc_bbox_3d, '2d': npc_bbox_2d})
 
                             json_frame_data['objects'].append({
@@ -479,13 +547,16 @@ def main():
                                 } if npc_bbox_2d else None,
                                 'light_state': vehicle_light_state_to_dict(npc) if npc.type_id.startswith('vehicle') else None
                             })
+            rgb_with_bbox = draw_bboxes_on_frame(img, frame_bboxes, display_3d, default_font)
+            dvs_with_bbox = draw_bboxes_on_frame(dvs_frame, frame_bboxes, display_3d, default_font)
+
+            rgb_surf = pygame.surfarray.make_surface(np.transpose(rgb_with_bbox, (1, 0, 2)))
+            dvs_surf = pygame.surfarray.make_surface(np.transpose(dvs_with_bbox, (1, 0, 2)))
 
             # 6. Render to Pygame
             display.fill((0,0,0))
-            if display_3d:
-                visualize_3d_bboxes(display, img, frame_bboxes, default_font)
-            else:
-                visualize_2d_bboxes(display, img, frame_bboxes, default_font)
+            display.blit(rgb_surf, (0, 0))
+            display.blit(dvs_surf, (args.width, 0))
             pygame.display.flip()
             clock.tick(60)
             
@@ -495,11 +566,38 @@ def main():
                 raw = np.transpose(raw, (1, 0, 2))
                 
                 # Save to the new image directory
-                Image.fromarray(raw).save(f'{img_dir}/image_{snapshot.frame:08d}.png')
+                Image.fromarray(rgb_with_bbox).save(f'{img_dir}/rgb_{snapshot.frame:08d}.png')
+                Image.fromarray(dvs_with_bbox).save(f'{img_dir}/dvs_{snapshot.frame:08d}.png')
+                video_out_rgb.write(cv2.cvtColor(rgb_with_bbox, cv2.COLOR_RGB2BGR))
+                video_out_dvs.write(cv2.cvtColor(dvs_with_bbox, cv2.COLOR_RGB2BGR))
+                combined = np.hstack([
+                    cv2.cvtColor(rgb_with_bbox, cv2.COLOR_RGB2BGR),
+                    cv2.cvtColor(dvs_with_bbox, cv2.COLOR_RGB2BGR)
+                ])
+                combined_video.write(combined)
+                
+                if len(events) > 0:
+                    n = len(events)
+                    h5_events.resize(event_cursor + n, axis=0)
+                    h5_y.resize(event_cursor + n, axis=0)
+                    h5_t.resize(event_cursor + n, axis=0)
+                    h5_pol.resize(event_cursor + n, axis=0)
+                    
+                    h5_events[event_cursor:event_cursor + n] = events['x']
+                    h5_y     [event_cursor:event_cursor + n] = events['y']
+                    h5_t     [event_cursor:event_cursor + n] = events['t']
+                    h5_pol   [event_cursor:event_cursor + n] = events['pol']
+                    
+                    h5_events[event_cursor:event_cursor + n] = events['x']
+                    h5_y     [event_cursor:event_cursor + n] = events['y']
+                    h5_t     [event_cursor:event_cursor + n] = events['t']
+                    h5_pol   [event_cursor:event_cursor + n] = events['pol']
 
-                frame_bgr = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
-                video_out.write(frame_bgr)
+                    frame_idx = np.array([[event_cursor, event_cursor + n]], dtype=np.int64)
+                    h5_frames.resize(h5_frames.shape[0] + 1, axis=0)
+                    h5_frames[-1] = frame_idx
 
+                    event_cursor += n
                 # Save JSON to the image directory
                 with open(f"{img_dir}/{snapshot.frame}.json", 'w') as f:
                     json.dump(json_frame_data, f)
@@ -516,8 +614,11 @@ def main():
         
         # Notice the quotes around 'video_out'
         if 'video_out' in locals():
-            video_out.release()
+            video_out_dvs.release()
+            video_out_rgb.release()
             print('Video saved successfully.')
+        if 'h5_file' in locals():
+            h5_file.close()
         settings = world.get_settings()
         settings.synchronous_mode = False
         settings.fixed_delta_seconds = None
