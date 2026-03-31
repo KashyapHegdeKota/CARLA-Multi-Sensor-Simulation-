@@ -397,7 +397,8 @@ def main():
         record = True
         display_3d = True
         run_simulation = True
-
+        recorded_frames = 0
+        target_frames = 30*20 # 30 seconds at 20 FPS
         while run_simulation:
             # 1. Handle Pygame Events
             for event in pygame.event.get():
@@ -487,8 +488,7 @@ def main():
                 visualize_2d_bboxes(display, img, frame_bboxes, default_font)
             pygame.display.flip()
             clock.tick(60)
-            recorded_frames = 0
-            target_frames = 30*20 # 30 seconds at 20 FPS
+            
 
             if record:
                 raw = pygame.surfarray.array3d(display)
@@ -507,12 +507,8 @@ def main():
 
                 if recorded_frames >= target_frames:
                     print(f"\n[Timer] Recorded {recorded_frames} frames. Stopping recording...")
-                    record = False
                     run_simulation = False
                     
-            if snapshot.timestamp.elapsed_seconds - start_time >= 30: # Stop after 30 seconds
-                print("\n[Timer] 30 seconds reached. Initiating shutdown...")
-                run_simulation = False
     except KeyboardInterrupt:
         print('\nCancelled by user. Bye!')
     finally:
